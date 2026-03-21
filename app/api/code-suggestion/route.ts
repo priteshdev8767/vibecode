@@ -38,12 +38,12 @@ type ModelEntry = { id: string; label: string }
 
 const MODEL_STACK: ModelEntry[] = [
   {
-    id: "gemini-2.0-flash",
-    label: "Gemini 2.0 Flash (Free)",
+    id: "gemini-2.0",
+    label: "Gemini 2.0",
   },
   {
-    id: "gemini-1.5-flash",
-    label: "Gemini 1.5 Flash (Fallback)",
+    id: "gemini-1.5",
+    label: "Gemini 1.5",
   },
 ]
 
