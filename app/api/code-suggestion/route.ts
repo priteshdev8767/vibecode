@@ -20,16 +20,17 @@ import { type NextRequest, NextResponse } from "next/server";
 
 const CFG = {
   MAX_FILE_BYTES: 150_000,
-  CONTEXT_LINES_BEFORE: 30,      // minimal prefix for speed
-  CONTEXT_LINES_AFTER: 10,       // minimal suffix for speed
-  MAX_TOKENS: 100,               // short completions only (inline focused)
-  TEMPERATURE_FAST: 0.05,        // ultra-deterministic for speed
-  TEMPERATURE_REASONING: 0.1,    // faster reasoning
-  NUM_CANDIDATES: 1,             // single best suggestion only
-  AI_TIMEOUT_MS: 3_500,          // 3.5 second max for main model
-  FALLBACK_TIMEOUT_MS: 1_500,    // 1.5 second max for fallback
-  CACHE_SIZE: 256,               // larger cache to hit more often
-  CACHE_TTL_MS: 60_000,          // longer cache TTL (1 minute)
+  CONTEXT_LINES_BEFORE: 15,      // ultra-minimal context for rate limiting
+  CONTEXT_LINES_AFTER: 5,        // minimal suffix for speed
+  MAX_TOKENS: 50,                // very short completions to save quota
+  TEMPERATURE_FAST: 0.02,        // ultra-deterministic for consistency
+  TEMPERATURE_REASONING: 0.05,   // faster reasoning
+  NUM_CANDIDATES: 1,             // single result only
+  AI_TIMEOUT_MS: 2_000,          // 2 second max for main model
+  FALLBACK_TIMEOUT_MS: 1_000,    // 1 second max for fallback
+  CACHE_SIZE: 512,               // 2x cache slots for more hits
+  CACHE_TTL_MS: 120_000,         // 2 minute cache (4x longer)
+  REQUEST_DEBOUNCE_MS: 300,      // debounce rapid requests
 } as const
 
 // ─── Model Stack ──────────────────────────────────────────────────────────────
@@ -39,15 +40,7 @@ type ModelEntry = { id: string; label: string }
 const MODEL_STACK: ModelEntry[] = [
   {
     id: "openrouter/auto",
-    label: "OpenRouter Auto (Fastest Available)",
-  },
-  {
-    id: "nvidia/nemotron-nano-9b-v2:free",
-    label: "NVIDIA Nemotron Nano 9B",
-  },
-  {
-    id: "arcee-ai/trinity-mini:free",
-    label: "Trinity Mini (Fallback)",
+    label: "OpenRouter Auto (Rate-Limited Optimized)",
   },
 ]
 
@@ -150,6 +143,7 @@ class LRUCache {
 
 const cache = new LRUCache(CFG.CACHE_SIZE)
 const inFlight = new Map<string, Promise<SuggestionResponse>>()
+const lastRequestTime = new Map<string, number>()
 
 // ─── Route Handler ────────────────────────────────────────────────────────────
 
@@ -165,6 +159,31 @@ export async function POST(request: NextRequest) {
 
   const context = analyzeCodeContext(body)
   const cacheKey = buildCacheKey(context, body.suggestionType)
+
+  // ── Rate limiting: debounce rapid requests ──
+  const now = Date.now()
+  const lastTime = lastRequestTime.get(cacheKey) || 0
+  if (now - lastTime < CFG.REQUEST_DEBOUNCE_MS) {
+    // Return empty suggestion for debounced requests
+    return NextResponse.json({
+      suggestion: "",
+      candidates: [],
+      cached: false,
+      modelUsed: "debounced",
+      metadata: {
+        language: context.language,
+        framework: context.framework,
+        database: context.database,
+        runtime: context.runtime,
+        scope: context.semantic.currentScope,
+        position: context.cursorPosition,
+        tokenBudgetUsed: 0,
+        generatedAt: new Date().toISOString(),
+        latencyMs: Date.now() - t0,
+      },
+    })
+  }
+  lastRequestTime.set(cacheKey, now)
 
   // ── Cache hit ──
   const hit = cache.get(cacheKey)
