@@ -391,8 +391,10 @@ function buildPrompt(context: CodeContext, type: SuggestionType): { system: stri
     `- Scope: ${semantic.currentScope} — respect it\n` +
     `- Do NOT repeat code already visible in the prefix or suffix\n` +
     `- Reuse existing variable names, types, and patterns from the file\n` +
-    `- Never introduce libraries not already imported\n` +
-    `- Never break existing architecture or logic`
+    `- Prefer short precise completion similar to Copilot style (exact minimal token sequence)\n` +
+    `- Prefer completion that integrates with existing imports and patterns\n` +
+    `- Do NOT introduce unknown library dependencies\n` +
+    `- Do NOT break existing architecture or logic`
 
   const user =
     `Stack: ${stack}\n` +
@@ -460,7 +462,22 @@ async function runGeneration(
         },
       }
     } catch (err) {
-      lastError = err instanceof Error ? err : new Error(String(err))
+      const errorObj = err instanceof Error ? err : new Error(String(err))
+
+      // Copilot-like fallback: if target model is unavailable, try next model
+      if (model.id === "gemini-2.5-flash" && /\/models\/.+\s*not found/.test(errorObj.message)) {
+        console.warn(`[CodeSuggestion] ${model.id} unavailable, falling back to next model: ${errorObj.message}`)
+        lastError = errorObj
+        continue
+      }
+
+      if (model.id === "gemini-2.5-flash" && /429/.test(errorObj.message)) {
+        console.warn(`[CodeSuggestion] ${model.id} quota reached, falling back to gemini-2.0: ${errorObj.message}`)
+        lastError = errorObj
+        continue
+      }
+
+      lastError = errorObj
       console.warn(`[CodeSuggestion] Model ${model.id} failed: ${lastError.message} — trying next`)
       continue
     }
