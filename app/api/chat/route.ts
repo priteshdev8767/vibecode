@@ -96,11 +96,29 @@ Keep responses concise but comprehensive. Use code blocks with language specific
     ...messages,
   ]
 
-  return await callOpenRouter(selectedModel, fullMessages, {
-    temperature: 0.7,
-    max_tokens: 1000,
-    timeout: 30000,
-  })
+  const selectedModelIds =
+    selectedModel === "all"
+      ? CHAT_MODELS.map((m) => m.id)
+      : [selectedModel || DEFAULT_MODEL]
+
+  let lastError: Error | null = null
+
+  for (const modelId of selectedModelIds) {
+    try {
+      return await callOpenRouter(modelId, fullMessages, {
+        temperature: 0.7,
+        max_tokens: 1000,
+        timeout: 30000,
+      })
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err))
+      console.warn(`[AI Chat] OpenRouter ${modelId} failed, trying next model: ${lastError.message}`)
+    }
+  }
+
+  throw new Error(
+    `No OpenRouter model succeeded (selected: ${selectedModel}). last error: ${lastError?.message || "unknown"}`
+  )
 }
 
 // ─── Enhance prompt ───────────────────────────────────────────────────────────
