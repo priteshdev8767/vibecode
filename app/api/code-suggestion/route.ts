@@ -41,6 +41,18 @@ const MODEL_STACK: ModelEntry[] = [
     id: "openrouter/auto",
     label: "OpenRouter Auto",
   },
+  {
+    id: "openrouter/koala-mini",
+    label: "Koala Mini",
+  },
+  {
+    id: "openrouter/gpt-4o-mini",
+    label: "GPT-4o Mini",
+  },
+  {
+    id: "openrouter/llama-2-7b",
+    label: "LLaMA 2 7B",
+  },
 ]
 
 /** Return the ordered list of models to try for a given suggestionType. */
