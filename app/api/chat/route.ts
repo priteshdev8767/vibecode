@@ -107,6 +107,62 @@ async function callGemini(
   }
 }
 
+async function callOpenRouter(
+  model: string,
+  messages: ChatMessage[],
+  options: { temperature?: number; max_tokens?: number; timeout?: number } = {}
+): Promise<{ content: string; model: string }> {
+  const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY
+  if (!OPENROUTER_API_KEY) {
+    throw new Error("Missing OPENROUTER_API_KEY in environment variables")
+  }
+
+  const { temperature = 0.7, max_tokens = 1000, timeout = 30000 } = options
+
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), timeout)
+
+  try {
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        temperature,
+        max_tokens,
+      }),
+      signal: controller.signal,
+    })
+
+    clearTimeout(timeoutId)
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      console.error(`OpenRouter error (${model}):`, errorText)
+      throw new Error(`OpenRouter API error ${response.status}: ${errorText}`)
+    }
+
+    const data = await response.json()
+    const content = data.choices?.[0]?.message?.content?.trim() || ""
+
+    if (!content) {
+      throw new Error(`Empty response from ${model}`)
+    }
+
+    return { content, model }
+  } catch (error) {
+    clearTimeout(timeoutId)
+    if ((error as Error).name === "AbortError") {
+      throw new Error(`Timeout: ${model} took too long to respond`)
+    }
+    throw error
+  }
+}
+
 // ─── Generate AI response (single model) ──────────────────────────────────────
 
 async function generateAIResponse(
@@ -128,12 +184,28 @@ Keep responses concise but comprehensive. Use code blocks with language specific
     ...messages,
   ]
 
-  // ── Single model ──
-  return callGemini(selectedModel, fullMessages, {
-    temperature: 0.7,
-    max_tokens: 1000,
-    timeout: 30000,
-  })
+  // ── Single model with OpenRouter fallback on quota/model issues ──
+  try {
+    return await callGemini(selectedModel, fullMessages, {
+      temperature: 0.7,
+      max_tokens: 1000,
+      timeout: 30000,
+    })
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error)
+
+    if (/429|quota/i.test(msg) || /not found/i.test(msg)) {
+      console.warn(`Gemini fallback to OpenRouter due to: ${msg}`)
+      try {
+        return await callOpenRouter("openrouter/auto", fullMessages, { temperature: 0.7, max_tokens: 1000, timeout: 30000 })
+      } catch (openErr) {
+        const openMsg = openErr instanceof Error ? openErr.message : String(openErr)
+        throw new Error(`Both Gemini and OpenRouter failed. Gemini: ${msg}; OpenRouter: ${openMsg}`)
+      }
+    }
+
+    throw error
+  }
 }
 
 // ─── Enhance prompt ───────────────────────────────────────────────────────────

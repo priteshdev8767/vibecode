@@ -42,8 +42,12 @@ const MODEL_STACK: ModelEntry[] = [
     label: "Gemini 2.5 Flash",
   },
   {
-    id: "gemini-2.0",
-    label: "Gemini 2.0",
+    id: "gemini-2.5",
+    label: "Gemini 2.5",
+  },
+  {
+    id: "openrouter/auto",
+    label: "OpenRouter Auto",
   },
 ]
 
@@ -433,10 +437,9 @@ async function runGeneration(
 
   for (const model of orderedModels) {
     try {
-      const candidates = await callModel(
-        API_KEY, model.id, system, user, stops, temperature,
-        model.id === orderedModels.at(-1)?.id ? CFG.FALLBACK_TIMEOUT_MS : CFG.AI_TIMEOUT_MS,
-      )
+      const candidates = model.id.startsWith("openrouter/")
+        ? await callOpenRouter(API_KEY, model.id, system, user, stops, temperature, model.id === orderedModels.at(-1)?.id ? CFG.FALLBACK_TIMEOUT_MS : CFG.AI_TIMEOUT_MS)
+        : await callModel(API_KEY, model.id, system, user, stops, temperature, model.id === orderedModels.at(-1)?.id ? CFG.FALLBACK_TIMEOUT_MS : CFG.AI_TIMEOUT_MS)
 
       if (!candidates.length) continue
 
@@ -464,15 +467,21 @@ async function runGeneration(
     } catch (err) {
       const errorObj = err instanceof Error ? err : new Error(String(err))
 
-      // Copilot-like fallback: if target model is unavailable, try next model
-      if (model.id === "gemini-2.5-flash" && /\/models\/.+\s*not found/.test(errorObj.message)) {
-        console.warn(`[CodeSuggestion] ${model.id} unavailable, falling back to next model: ${errorObj.message}`)
+      // Copilot-like fallback: if Gemini model is unavailable or quota is exceeded, try next model
+      if ((model.id.startsWith("gemini") || model.id.startsWith("openrouter")) && /404\s*\:\s*\{\s*"error"\s*\:\s*\{\s*"code"\s*\:\s*404/.test(errorObj.message)) {
+        console.warn(`[CodeSuggestion] ${model.id} not found for API version; trying next model: ${errorObj.message}`)
         lastError = errorObj
         continue
       }
 
-      if (model.id === "gemini-2.5-flash" && /429/.test(errorObj.message)) {
-        console.warn(`[CodeSuggestion] ${model.id} quota reached, falling back to gemini-2.0: ${errorObj.message}`)
+      if (model.id.startsWith("gemini") && /429/.test(errorObj.message)) {
+        console.warn(`[CodeSuggestion] ${model.id} quota reached, trying next fallback model: ${errorObj.message}`)
+        lastError = errorObj
+        continue
+      }
+
+      if (model.id.startsWith("openrouter") && /429/.test(errorObj.message)) {
+        console.warn(`[CodeSuggestion] ${model.id} quota reached, trying next fallback model: ${errorObj.message}`)
         lastError = errorObj
         continue
       }
@@ -552,6 +561,56 @@ async function callModel(
           stopReason: c.finishReason ?? "unknown",
         }
       })
+      .filter((c: { text: string }) => c.text.length > 0)
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+async function callOpenRouter(
+  apiKey: string,
+  modelId: string,
+  system: string,
+  user: string,
+  stops: string[],
+  temperature: number,
+  timeoutMs: number,
+): Promise<Omit<Candidate, "confidence" | "modelUsed">[]> {
+  const ctrl = new AbortController()
+  const timeout = setTimeout(() => ctrl.abort(), timeoutMs)
+
+  try {
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      signal: ctrl.signal,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: modelId,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+        max_tokens: CFG.MAX_TOKENS,
+        temperature,
+        n: CFG.NUM_CANDIDATES,
+        stop: stops,
+      }),
+    })
+
+    if (!response.ok) {
+      const body = await response.text()
+      throw new Error(`HTTP ${response.status}: ${body}`)
+    }
+
+    const data = await response.json()
+    return (data.choices ?? [])
+      .map((c: { message?: { content?: string }; finish_reason?: string }) => ({
+        text: cleanSuggestion(c.message?.content ?? ""),
+        stopReason: c.finish_reason ?? "unknown",
+      }))
       .filter((c: { text: string }) => c.text.length > 0)
   } finally {
     clearTimeout(timeout)
