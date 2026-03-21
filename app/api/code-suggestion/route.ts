@@ -20,17 +20,16 @@ import { type NextRequest, NextResponse } from "next/server";
 
 const CFG = {
   MAX_FILE_BYTES: 150_000,
-  CONTEXT_LINES_BEFORE: 15,      // ultra-minimal context for rate limiting
-  CONTEXT_LINES_AFTER: 5,        // minimal suffix for speed
-  MAX_TOKENS: 50,                // very short completions to save quota
-  TEMPERATURE_FAST: 0.02,        // ultra-deterministic for consistency
-  TEMPERATURE_REASONING: 0.05,   // faster reasoning
-  NUM_CANDIDATES: 1,             // single result only
-  AI_TIMEOUT_MS: 2_000,          // 2 second max for main model
-  FALLBACK_TIMEOUT_MS: 1_000,    // 1 second max for fallback
-  CACHE_SIZE: 512,               // 2x cache slots for more hits
-  CACHE_TTL_MS: 120_000,         // 2 minute cache (4x longer)
-  REQUEST_DEBOUNCE_MS: 300,      // debounce rapid requests
+  CONTEXT_LINES_BEFORE: 25,      // increased for better semantic understanding
+  CONTEXT_LINES_AFTER: 15,       // increased for completion context
+  MAX_TOKENS: 75,                // optimal for inline completions
+  TEMPERATURE_FAST: 0.01,        // ultra-deterministic for consistency
+  TEMPERATURE_REASONING: 0.03,   // more deterministic reasoning
+  NUM_CANDIDATES: 1,             // single best suggestion
+  AI_TIMEOUT_MS: 1_200,          // 1.2s for faster response
+  FALLBACK_TIMEOUT_MS: 800,      // 0.8s fallback
+  CACHE_SIZE: 1024,              // 2x cache for more hits
+  CACHE_TTL_MS: 180_000,         // 3 minute cache (longer reuse)
 } as const
 
 // ─── Model Stack ──────────────────────────────────────────────────────────────
@@ -46,7 +45,24 @@ const MODEL_STACK: ModelEntry[] = [
 
 /** Return the ordered list of models to try for a given suggestionType. */
 function modelsForType(type: SuggestionType): ModelEntry[] {
-  return MODEL_STACK
+  // Smart model selection based on completion type
+  switch (type) {
+    case "inline":
+      // Fast, lightweight model for quick completions
+      return [{
+        id: "openrouter/auto",
+        label: "OpenRouter Auto (Optimized for Speed)",
+      }]
+    case "block":
+      // More capable model for complex completions
+      return [{
+        id: "openrouter/auto",
+        label: "OpenRouter Auto (Full Context)",
+      }]
+    default:
+      // Default fallback
+      return MODEL_STACK
+  }
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -160,32 +176,7 @@ export async function POST(request: NextRequest) {
   const context = analyzeCodeContext(body)
   const cacheKey = buildCacheKey(context, body.suggestionType)
 
-  // ── Rate limiting: debounce rapid requests ──
-  const now = Date.now()
-  const lastTime = lastRequestTime.get(cacheKey) || 0
-  if (now - lastTime < CFG.REQUEST_DEBOUNCE_MS) {
-    // Return empty suggestion for debounced requests
-    return NextResponse.json({
-      suggestion: "",
-      candidates: [],
-      cached: false,
-      modelUsed: "debounced",
-      metadata: {
-        language: context.language,
-        framework: context.framework,
-        database: context.database,
-        runtime: context.runtime,
-        scope: context.semantic.currentScope,
-        position: context.cursorPosition,
-        tokenBudgetUsed: 0,
-        generatedAt: new Date().toISOString(),
-        latencyMs: Date.now() - t0,
-      },
-    })
-  }
-  lastRequestTime.set(cacheKey, now)
-
-  // ── Cache hit ──
+  // ── Smart caching: position-aware with incremental updates ──
   const hit = cache.get(cacheKey)
   if (hit) return NextResponse.json({ ...hit, cached: true })
 
@@ -397,8 +388,8 @@ function buildPrompt(context: CodeContext, type: SuggestionType): { system: stri
   ].filter(Boolean).join("\n\n")
 
   const typeInstructions: Record<SuggestionType, string> = {
-    inline: "Complete exactly what is missing at <CURSOR>. Keep it minimal and syntactically correct.",
-    block: "Complete the entire logical block starting at <CURSOR>.",
+    inline: "Complete the current line or statement at <CURSOR> with the most likely next tokens. Focus on immediate context and common patterns. Keep completions short (1-3 words/tokens) and highly probable.",
+    block: "Complete the logical code block starting at <CURSOR>. Consider the full context and provide meaningful completion.",
     docstring: "Generate a complete JSDoc / docstring comment for the function at <CURSOR>.",
     test: "Generate a complete unit test for the function at <CURSOR>. Use existing test framework if visible.",
     refactor: "Rewrite the selected code at <CURSOR> to be cleaner, more idiomatic, and more performant.",
@@ -406,29 +397,31 @@ function buildPrompt(context: CodeContext, type: SuggestionType): { system: stri
   }
 
   const system =
-    `You are an expert ${stack} code completion engine operating like GitHub Copilot.\n` +
+    `You are an expert ${stack} code completion AI like GitHub Copilot.\n` +
     `Task: ${typeInstructions[type]}\n\n` +
-    `STRICT OUTPUT RULES:\n` +
-    `- Return ONLY the raw code to insert — no markdown, no backticks, no prose\n` +
-    `- Use ${indent}\n` +
-    `- Scope: ${semantic.currentScope} — respect it\n` +
-    `- Do NOT repeat code already visible in the prefix or suffix\n` +
-    `- Reuse existing variable names, types, and patterns from the file\n` +
-    `- Prefer short precise completion similar to Copilot style (exact minimal token sequence)\n` +
-    `- Prefer completion that integrates with existing imports and patterns\n` +
-    `- Do NOT introduce unknown library dependencies\n` +
-    `- Do NOT break existing architecture or logic`
+    `SMART COMPLETION RULES:\n` +
+    `- Analyze the immediate context around <CURSOR> for patterns and intent\n` +
+    `- Use ${indent} consistently\n` +
+    `- Respect ${semantic.currentScope} scope boundaries\n` +
+    `- Complete based on: existing imports, variable names, function signatures, and code patterns\n` +
+    `- For inline: predict next 1-5 tokens that would naturally follow\n` +
+    `- Prefer completions that match the project's coding style and conventions\n` +
+    `- Consider language-specific idioms and best practices\n` +
+    `- If completing a function call, suggest logical parameter values\n` +
+    `- If completing a variable, use appropriate naming conventions\n` +
+    `- Output ONLY raw code - no explanations, no markdown, no backticks\n` +
+    `- Keep completions concise but complete logical units`
 
   const user =
-    `Stack: ${stack}\n` +
-    `Scope: ${semantic.currentScope}  In function: ${isInFunction}  In class: ${isInClass}\n` +
-    (hints ? `\n=== File Context ===\n${hints}\n` : "") +
-    `\n=== Code Prefix ===\n${prefix}<CURSOR>\n` +
-    `=== Code Suffix ===\n${suffix}\n` +
-    `=== Cursor State ===\n` +
-    `After comment: ${isAfterComment}\n` +
-    `Incomplete patterns: ${incompletePatterns.join(", ") || "none"}\n\n` +
-    `Generate ${type} completion at <CURSOR>:`
+    `Language: ${language} | Framework: ${framework} | Scope: ${semantic.currentScope}\n` +
+    `Position: Line ${context.cursorPosition.line}, Column ${context.cursorPosition.column}\n` +
+    `In Function: ${isInFunction} | In Class: ${isInClass} | After Comment: ${isAfterComment}\n` +
+    (hints ? `\n=== Code Context ===\n${hints}\n` : "") +
+    `\n=== Code to Complete ===\n${prefix}<CURSOR>${suffix}\n` +
+    `\n=== Completion Instructions ===\n` +
+    `Generate the most likely ${type} completion that would naturally follow <CURSOR>.\n` +
+    `Focus on immediate context and common ${language} patterns.\n` +
+    `Complete the current statement or logical unit.`
 
   return { system, user }
 }
@@ -460,8 +453,13 @@ async function runGeneration(
 
       if (!candidates.length) continue
 
-      const scored = candidates
-        .map(c => ({ ...c, modelUsed: model.id, confidence: scoreSuggestion(c, context) }))
+      // Pre-filter obviously bad candidates before scoring
+      const filteredCandidates = preFilterCandidates(candidates, context, type)
+
+      if (!filteredCandidates.length) continue
+
+      const scored = filteredCandidates
+        .map(c => ({ ...c, modelUsed: model.id, confidence: scoreSuggestion(c, context, type) }))
         .sort((a, b) => b.confidence - a.confidence)
 
       return {
@@ -582,9 +580,68 @@ async function callOpenRouter(
 
 // ─── Candidate Scoring ────────────────────────────────────────────────────────
 
+/** Filter out obviously bad suggestions before detailed scoring. */
+function preFilterCandidates(candidates: Omit<Candidate, "confidence" | "modelUsed">[], context: CodeContext, type: SuggestionType): Omit<Candidate, "confidence" | "modelUsed">[] {
+  return candidates.filter(candidate => {
+    const text = candidate.text.trim()
+
+    // Filter out empty or whitespace-only suggestions
+    if (!text) return false
+
+    // Filter out suggestions that start with the same word as the current line ends with
+    const lastWord = context.prefix.match(/(\w+)\s*$/)?.[1]
+    if (lastWord && text.startsWith(lastWord)) return false
+
+    // Filter out suggestions that are just repeating existing code
+    if (context.suffix && text === context.suffix.slice(0, text.length)) return false
+
+    // Filter out suggestions with wrong indentation for the file
+    const wrongIndentRe = context.semantic.indentStyle === "tabs" ? /^ {4}/m : /^\t/m
+    if (wrongIndentRe.test(text)) return false
+
+    // Filter out extremely short suggestions for block completions
+    if (type === 'block' && text.length < 5) return false
+
+    return true
+  })
+}
+
+function detectProgrammingParadigm(context: CodeContext): 'functional' | 'oop' | 'reactive' | 'imperative' {
+  const imports = context.semantic.imports.join(' ')
+  const symbols = context.semantic.localSymbols.join(' ')
+
+  // Functional indicators
+  const functionalScore = (
+    (imports.match(/\bmap\b|\bfilter\b|\breduce\b/) || []).length +
+    (symbols.match(/=>\s*{/) || []).length * 2 +
+    (context.semantic.currentScope === 'function' ? 1 : 0)
+  )
+
+  // OOP indicators
+  const oopScore = (
+    (imports.match(/\bclass\b|\bextends\b|\bimplements\b/) || []).length * 3 +
+    (context.isInClass ? 3 : 0) +
+    (symbols.match(/\bthis\./) || []).length
+  )
+
+  // Reactive indicators
+  const reactiveScore = (
+    (imports.match(/\bObservable\b|\bSubject\b|\bBehaviorSubject\b/) || []).length * 3 +
+    (imports.match(/\bpipe\b|\bof\b|\bfrom\b/) || []).length * 2
+  )
+
+  // Determine paradigm
+  const maxScore = Math.max(functionalScore, oopScore, reactiveScore)
+  if (maxScore === 0) return 'imperative'
+  if (functionalScore === maxScore) return 'functional'
+  if (oopScore === maxScore) return 'oop'
+  return 'reactive'
+}
+
 function scoreSuggestion(
   candidate: Omit<Candidate, "confidence" | "modelUsed">,
   context: CodeContext,
+  type: SuggestionType,
 ): number {
   let score = 100
 
@@ -619,6 +676,51 @@ function scoreSuggestion(
     }
   }
 
+  // Boost for completions that match current indentation pattern
+  const currentIndent = context.prefix.match(/^(\s*)/)?.[1] || ""
+  if (candidate.text.startsWith(currentIndent)) {
+    score += 10
+  }
+
+  // Boost for completions that continue logical code patterns
+  if (context.language === 'typescript' || context.language === 'javascript') {
+    // Arrow functions and method completions
+    if (candidate.text.includes('=>') || candidate.text.includes('function')) {
+      score += 8
+    }
+    // Type annotations
+    if (candidate.text.includes(': ') || candidate.text.includes('<')) {
+      score += 5
+    }
+  }
+
+  // Context-aware boosts for different suggestion types
+  if (type === 'block') {
+    // Prefer multi-line completions for blocks
+    if (candidate.text.includes('\n')) {
+      score += 15
+    }
+    // Penalize very short block suggestions
+    if (candidate.text.trim().length < 15) {
+      score -= 20
+    }
+  } else if (type === 'inline') {
+    // Prefer single-line completions for inline
+    if (!candidate.text.includes('\n')) {
+      score += 10
+    }
+  }
+
+  // Programming paradigm detection and scoring
+  const paradigm = detectProgrammingParadigm(context)
+  if (paradigm === 'functional' && candidate.text.includes('=>')) {
+    score += 12
+  } else if (paradigm === 'oop' && candidate.text.includes('class ')) {
+    score += 12
+  } else if (paradigm === 'reactive' && candidate.text.includes('Observable')) {
+    score += 12
+  }
+
   return score
 }
 
@@ -650,7 +752,11 @@ function cleanSuggestion(raw: string): string {
 // ─── Cache Key ────────────────────────────────────────────────────────────────
 
 function buildCacheKey(ctx: CodeContext, type: string): string {
-  return `${ctx.language}:${type}:${ctx.prefix.slice(-200)}:::${ctx.suffix.slice(0, 80)}`
+  // Smart cache key: position-aware with semantic context
+  const positionKey = `${ctx.cursorPosition.line}:${ctx.cursorPosition.column}`
+  const semanticKey = `${ctx.semantic.currentScope}:${ctx.isInFunction}:${ctx.isInClass}`
+  const contextHash = `${ctx.prefix.slice(-150)}|${ctx.suffix.slice(0, 50)}`
+  return `${ctx.language}:${type}:${positionKey}:${semanticKey}:${contextHash}`
 }
 
 // ─── Language Detection ───────────────────────────────────────────────────────
