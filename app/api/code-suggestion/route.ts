@@ -38,20 +38,28 @@ type ModelEntry = { id: string; label: string }
 
 const MODEL_STACK: ModelEntry[] = [
   {
-    id: "openrouter/auto",
-    label: "OpenRouter Auto",
+    id: "nvidia/nemotron-nano-9b-v2:free",
+    label: "NVIDIA Nemotron Nano 9B (Main)",
   },
   {
-    id: "openrouter/koala-mini",
-    label: "Koala Mini",
+    id: "microsoft/phi-4",
+    label: "Microsoft Phi-4 (Fallback)",
   },
   {
-    id: "openrouter/gpt-4o-mini",
-    label: "GPT-4o Mini",
+    id: "arcee-ai/trinity-mini:free",
+    label: "Trinity Mini (Fallback)",
   },
   {
-    id: "openrouter/llama-2-7b",
-    label: "LLaMA 2 7B",
+    id: "arcee-ai/trinity-large-preview:free",
+    label: "Trinity Large Preview (Fallback)",
+  },
+  {
+    id: "stepfun/step-3.5-flash:free",
+    label: "Step 3.5 Flash (Fallback)",
+  },
+  {
+    id: "mistralai/devstral-small",
+    label: "Mistral DevStral Small (Fallback)",
   },
 ]
 
