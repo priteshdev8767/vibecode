@@ -38,12 +38,16 @@ type ModelEntry = { id: string; label: string }
 
 const MODEL_STACK: ModelEntry[] = [
   {
+    id: "openrouter/auto",
+    label: "OpenRouter Auto (Fastest Available)",
+  },
+  {
     id: "nvidia/nemotron-nano-9b-v2:free",
-    label: "NVIDIA Nemotron Nano 9B (Ultra-Fast)",
+    label: "NVIDIA Nemotron Nano 9B",
   },
   {
     id: "arcee-ai/trinity-mini:free",
-    label: "Trinity Mini (Quick Fallback)",
+    label: "Trinity Mini (Fallback)",
   },
 ]
 
@@ -486,7 +490,25 @@ async function runGeneration(
     }
   }
 
-  throw lastError ?? new Error("All models exhausted without a valid completion")
+  // ── Graceful degradation: return empty suggestion instead of 500 error ──
+  console.warn(`[CodeSuggestion] All models exhausted, returning empty suggestion. Last error: ${lastError?.message}`)
+  return {
+    suggestion: "",
+    candidates: [],
+    cached: false,
+    modelUsed: "none",
+    metadata: {
+      language: context.language,
+      framework: context.framework,
+      database: context.database,
+      runtime: context.runtime,
+      scope: context.semantic.currentScope,
+      position: context.cursorPosition,
+      tokenBudgetUsed: 0,
+      generatedAt: new Date().toISOString(),
+      latencyMs: Date.now() - t0,
+    },
+  }
 }
 
 async function callOpenRouter(
