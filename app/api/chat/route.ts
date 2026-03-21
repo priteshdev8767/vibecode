@@ -195,9 +195,10 @@ Keep responses concise but comprehensive. Use code blocks with language specific
     const msg = error instanceof Error ? error.message : String(error)
 
     if (/429|quota/i.test(msg) || /not found/i.test(msg)) {
-      console.warn(`Gemini fallback to OpenRouter due to: ${msg}`)
+      const openrouterModel = process.env.OPENROUTER_MODEL || "openrouter/auto"
+      console.warn(`Gemini fallback to OpenRouter (${openrouterModel}) due to: ${msg}`)
       try {
-        return await callOpenRouter("openrouter/auto", fullMessages, { temperature: 0.7, max_tokens: 1000, timeout: 30000 })
+        return await callOpenRouter(openrouterModel, fullMessages, { temperature: 0.7, max_tokens: 1000, timeout: 30000 })
       } catch (openErr) {
         const openMsg = openErr instanceof Error ? openErr.message : String(openErr)
         throw new Error(`Both Gemini and OpenRouter failed. Gemini: ${msg}; OpenRouter: ${openMsg}`)
