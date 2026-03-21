@@ -51,7 +51,6 @@ const MODEL_STACK: ModelEntry[] = [
 function modelsForType(type: SuggestionType): ModelEntry[] {
   return MODEL_STACK
 }
-}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
