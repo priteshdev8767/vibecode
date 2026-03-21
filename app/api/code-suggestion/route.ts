@@ -50,7 +50,7 @@ function modelsForType(type: SuggestionType): ModelEntry[] {
     case "inline":
       // Fast, lightweight model for quick completions
       return [{
-        id: "nvidia/nemotron-nano-9b-v2:free",
+        id: "nvidia/nemotron-3-nano-30b-a3b:free",
         label: "Nvidia Nemotron Nano 9B (Free - Optimized for Speed)",
       }]
     case "block":
