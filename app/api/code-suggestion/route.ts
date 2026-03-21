@@ -20,16 +20,16 @@ import { type NextRequest, NextResponse } from "next/server";
 
 const CFG = {
   MAX_FILE_BYTES: 150_000,
-  CONTEXT_LINES_BEFORE: 80,      // generous prefix — full-file awareness
-  CONTEXT_LINES_AFTER: 30,      // suffix for FIM
-  MAX_TOKENS: 300,
-  TEMPERATURE_FAST: 0.1,     // inline / block completions
-  TEMPERATURE_REASONING: 0.2,     // docstring / test / refactor / debug
-  NUM_CANDIDATES: 3,
-  AI_TIMEOUT_MS: 12_000,
-  FALLBACK_TIMEOUT_MS: 6_000,   // tighter budget for fallback models
-  CACHE_SIZE: 128,
-  CACHE_TTL_MS: 30_000,
+  CONTEXT_LINES_BEFORE: 30,      // minimal prefix for speed
+  CONTEXT_LINES_AFTER: 10,       // minimal suffix for speed
+  MAX_TOKENS: 100,               // short completions only (inline focused)
+  TEMPERATURE_FAST: 0.05,        // ultra-deterministic for speed
+  TEMPERATURE_REASONING: 0.1,    // faster reasoning
+  NUM_CANDIDATES: 1,             // single best suggestion only
+  AI_TIMEOUT_MS: 3_500,          // 3.5 second max for main model
+  FALLBACK_TIMEOUT_MS: 1_500,    // 1.5 second max for fallback
+  CACHE_SIZE: 256,               // larger cache to hit more often
+  CACHE_TTL_MS: 60_000,          // longer cache TTL (1 minute)
 } as const
 
 // ─── Model Stack ──────────────────────────────────────────────────────────────
@@ -39,27 +39,11 @@ type ModelEntry = { id: string; label: string }
 const MODEL_STACK: ModelEntry[] = [
   {
     id: "nvidia/nemotron-nano-9b-v2:free",
-    label: "NVIDIA Nemotron Nano 9B (Main)",
-  },
-  {
-    id: "microsoft/phi-4",
-    label: "Microsoft Phi-4 (Fallback)",
+    label: "NVIDIA Nemotron Nano 9B (Ultra-Fast)",
   },
   {
     id: "arcee-ai/trinity-mini:free",
-    label: "Trinity Mini (Fallback)",
-  },
-  {
-    id: "arcee-ai/trinity-large-preview:free",
-    label: "Trinity Large Preview (Fallback)",
-  },
-  {
-    id: "stepfun/step-3.5-flash:free",
-    label: "Step 3.5 Flash (Fallback)",
-  },
-  {
-    id: "mistralai/devstral-small",
-    label: "Mistral DevStral Small (Fallback)",
+    label: "Trinity Mini (Quick Fallback)",
   },
 ]
 
