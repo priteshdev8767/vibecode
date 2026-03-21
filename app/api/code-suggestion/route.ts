@@ -1,28 +1,20 @@
 /**
  * Ultra-Fast AI Inline Code Suggestion API
  *
- * Model Stack (priority order):
- *  1. deepseek/deepseek-chat-v3-0324      — Primary inline suggestion
- *  2. deepseek/deepseek-v3.2              — Advanced reasoning / complex completions
- *  3. deepseek/deepseek-chat-v3.1         — Stable alternative
- *  4. deepseek/deepseek-v3.2-exp          — Complex debugging & error fixing
- *  5. google/gemini-2.5-flash-lite        — Ultra-fast fallback
+ * Model: Google Gemini 2.0 Flash (Free Tier)
  *
  * Capabilities:
  *  • Full-file semantic context (imports, symbols, types, conventions)
  *  • Fill-in-the-Middle (FIM) prompting — prefix + suffix aware
- *  • Automatic model routing based on suggestionType complexity
- *  • Waterfall fallback — if model N fails, model N+1 is tried instantly
  *  • Multi-candidate generation + confidence scoring
  *  • LRU cache (128 slots, 30s TTL) — skips model on cache hit
  *  • Request deduplication — concurrent identical requests share one fetch
  *  • Per-language stop sequences — prevents over-generation
- *  • SSE streaming support (`stream: true`)
  *  • Indent-style auto-detection (tabs vs spaces, 2 vs 4)
  *  • Framework-aware prompting (React, Next.js, Vue, Express, Django, …)
  */
 
-import { type NextRequest, NextResponse } from "next/server"
+import { type NextRequest, NextResponse } from "next/server";
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 
@@ -42,42 +34,23 @@ const CFG = {
 
 // ─── Model Stack ──────────────────────────────────────────────────────────────
 
-type ModelEntry = { id: string; label: string; forTypes?: SuggestionType[] }
+type ModelEntry = { id: string; label: string }
 
 const MODEL_STACK: ModelEntry[] = [
   {
-    id: "deepseek/deepseek-chat-v3-0324",
-    label: "Primary",
-    forTypes: ["inline", "block"],
+    id: "gemini-2.0-flash",
+    label: "Gemini 2.0 Flash (Free)",
   },
   {
-    id: "deepseek/deepseek-v3.2",
-    label: "Advanced",
-    forTypes: ["docstring", "test", "refactor"],
-  },
-  {
-    id: "deepseek/deepseek-chat-v3.1",
-    label: "Stable",
-  },
-  {
-    id: "deepseek/deepseek-v3.2-exp",
-    label: "Debug",
-    forTypes: ["debug"],
-  },
-  {
-    id: "google/gemini-2.5-flash-lite",
-    label: "Fallback",
+    id: "gemini-1.5-flash",
+    label: "Gemini 1.5 Flash (Fallback)",
   },
 ]
 
 /** Return the ordered list of models to try for a given suggestionType. */
 function modelsForType(type: SuggestionType): ModelEntry[] {
-  // Always start with the model explicitly assigned for this type (if any)
-  const preferred = MODEL_STACK.filter(m => m.forTypes?.includes(type))
-  const rest = MODEL_STACK.filter(m => !m.forTypes?.includes(type))
-  // De-duplicate while preserving order
-  const ordered = [...preferred, ...rest]
-  return ordered.filter((m, i) => ordered.findIndex(x => x.id === m.id) === i)
+  return MODEL_STACK
+}
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -443,8 +416,8 @@ async function runGeneration(
   type: SuggestionType,
   t0: number,
 ): Promise<SuggestionResponse> {
-  const API_KEY = process.env.OPENROUTER_API_KEY
-  if (!API_KEY) throw new Error("OPENROUTER_API_KEY not configured")
+  const API_KEY = process.env.GOOGLE_GEMINI_API_KEY
+  if (!API_KEY) throw new Error("GOOGLE_GEMINI_API_KEY not configured")
 
   const { system, user } = buildPrompt(context, type)
   const stops = STOP_SEQUENCES[context.language] ?? STOP_SEQUENCES.default
@@ -510,39 +483,59 @@ async function callModel(
   const timeout = setTimeout(() => ctrl.abort(), timeoutMs)
 
   try {
-    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      signal: ctrl.signal,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-        "HTTP-Referer": process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000",
-        "X-Title": "AI Code Suggestion",
-      },
-      body: JSON.stringify({
-        model: modelId,
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: user },
-        ],
-        max_tokens: CFG.MAX_TOKENS,
-        temperature,
-        n: CFG.NUM_CANDIDATES,
-        stop: stops,
-      }),
-    })
+    // Combine system and user prompts for Gemini
+    const combinedPrompt = `${system}\n\n${user}`
 
-    if (!res.ok) {
-      const body = await res.text()
-      throw new Error(`HTTP ${res.status}: ${body}`)
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`,
+      {
+        method: "POST",
+        signal: ctrl.signal,
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          contents: [
+            {
+              role: "user",
+              parts: [{ text: combinedPrompt }],
+            },
+          ],
+          generationConfig: {
+            temperature,
+            maxOutputTokens: CFG.MAX_TOKENS,
+            topP: 0.95,
+            topK: 64,
+            stopSequences: stops.length > 0 ? stops : undefined,
+          },
+          safetySettings: [
+            { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
+            { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
+            { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
+            { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
+          ],
+        }),
+      }
+    )
+
+    if (!response.ok) {
+      const body = await response.text()
+      throw new Error(`HTTP ${response.status}: ${body}`)
     }
 
-    const data = await res.json()
-    return (data.choices ?? [])
-      .map((c: { message?: { content?: string }; finish_reason?: string }) => ({
-        text: cleanSuggestion(c.message?.content ?? ""),
-        stopReason: c.finish_reason ?? "unknown",
-      }))
+    const data = await response.json()
+    
+    // Extract text from Gemini response
+    const candidates = data.candidates ?? []
+    
+    return candidates
+      .map((c: { content?: { parts?: Array<{ text?: string }> }; finishReason?: string }) => {
+        const text = c.content?.parts?.[0]?.text ?? ""
+        return {
+          text: cleanSuggestion(text),
+          stopReason: c.finishReason ?? "unknown",
+        }
+      })
       .filter((c: { text: string }) => c.text.length > 0)
   } finally {
     clearTimeout(timeout)

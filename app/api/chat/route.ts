@@ -1,7 +1,7 @@
-import { type NextRequest, NextResponse } from "next/server"
 import { auth } from "@/auth"
-import { db } from "@/lib/db"
 import { CHAT_MODELS, DEFAULT_MODEL } from "@/lib/chat-models"
+import { db } from "@/lib/db"
+import { type NextRequest, NextResponse } from "next/server"
 
 interface ChatMessage {
   role: "user" | "assistant" | "system"
@@ -17,16 +17,16 @@ interface EnhancePromptRequest {
   }
 }
 
-// ─── OpenRouter helper ────────────────────────────────────────────────────────
+// ─── Google Gemini helper ────────────────────────────────────────────────────
 
-async function callOpenRouter(
+async function callGemini(
   model: string,
   messages: ChatMessage[],
   options: { temperature?: number; max_tokens?: number; timeout?: number } = {}
 ): Promise<{ content: string; model: string }> {
-  const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY
-  if (!OPENROUTER_API_KEY) {
-    throw new Error("Missing OPENROUTER_API_KEY in environment variables")
+  const GOOGLE_GEMINI_API_KEY = process.env.GOOGLE_GEMINI_API_KEY
+  if (!GOOGLE_GEMINI_API_KEY) {
+    throw new Error("Missing GOOGLE_GEMINI_API_KEY in environment variables")
   }
 
   const { temperature = 0.7, max_tokens = 1000, timeout = 30000 } = options
@@ -35,33 +35,60 @@ async function callOpenRouter(
   const timeoutId = setTimeout(() => controller.abort(), timeout)
 
   try {
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-        "HTTP-Referer": process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000",
-        "X-Title": "Vibecode AI Chat",
-      },
-      body: JSON.stringify({
-        model,
-        messages,
-        temperature,
-        max_tokens,
-      }),
-      signal: controller.signal,
-    })
+    // Convert messages to Gemini format (skip system messages, embed in user message)
+    const systemMessages = messages.filter((m) => m.role === "system")
+    const conversationMessages = messages.filter((m) => m.role !== "system")
+
+    let firstUserContent = systemMessages.map((m) => m.content).join("\n\n")
+    if (firstUserContent && conversationMessages.length > 0 && conversationMessages[0].role === "user") {
+      firstUserContent = `${firstUserContent}\n\n${conversationMessages[0].content}`
+      conversationMessages.shift()
+    }
+
+    const geminiMessages = [
+      ...(firstUserContent ? [{ role: "user", parts: [{ text: firstUserContent }] }] : []),
+      ...conversationMessages.map((m) => ({
+        role: m.role === "assistant" ? "model" : "user",
+        parts: [{ text: m.content }],
+      })),
+    ]
+
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GOOGLE_GEMINI_API_KEY}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          contents: geminiMessages,
+          generationConfig: {
+            temperature,
+            maxOutputTokens: max_tokens,
+            topP: 0.95,
+            topK: 64,
+          },
+          safetySettings: [
+            { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
+            { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
+            { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
+            { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
+          ],
+        }),
+        signal: controller.signal,
+      }
+    )
 
     clearTimeout(timeoutId)
 
     if (!response.ok) {
       const errorText = await response.text()
-      console.error(`OpenRouter error (${model}):`, errorText)
-      throw new Error(`OpenRouter API error ${response.status}: ${errorText}`)
+      console.error(`Gemini error (${model}):`, errorText)
+      throw new Error(`Gemini API error ${response.status}: ${errorText}`)
     }
 
     const data = await response.json()
-    const content = data.choices?.[0]?.message?.content?.trim()
+    const content = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim()
 
     if (!content) {
       throw new Error(`Empty response from ${model}`)
@@ -69,7 +96,7 @@ async function callOpenRouter(
 
     return {
       content,
-      model: data.model || model,
+      model: model,
     }
   } catch (error) {
     clearTimeout(timeoutId)
@@ -80,7 +107,7 @@ async function callOpenRouter(
   }
 }
 
-// ─── Generate AI response (single model or race all) ─────────────────────────
+// ─── Generate AI response (single model) ──────────────────────────────────────
 
 async function generateAIResponse(
   messages: ChatMessage[],
@@ -101,24 +128,8 @@ Keep responses concise but comprehensive. Use code blocks with language specific
     ...messages,
   ]
 
-  // ── "all" mode: race every model ──
-  if (selectedModel === "all") {
-    const modelIds = CHAT_MODELS.map((m) => m.id)
-
-    try {
-      const result = await Promise.any(
-        modelIds.map((id) =>
-          callOpenRouter(id, fullMessages, { temperature: 0.7, max_tokens: 1000, timeout: 25000 })
-        )
-      )
-      return result
-    } catch {
-      throw new Error("All models failed to respond")
-    }
-  }
-
   // ── Single model ──
-  return callOpenRouter(selectedModel, fullMessages, {
+  return callGemini(selectedModel, fullMessages, {
     temperature: 0.7,
     max_tokens: 1000,
     timeout: 30000,
@@ -144,7 +155,7 @@ Enhanced prompt should:
 Return only the enhanced prompt, nothing else.`
 
   try {
-    const result = await callOpenRouter(
+    const result = await callGemini(
       DEFAULT_MODEL,
       [{ role: "user", content: enhancementPrompt }],
       { temperature: 0.3, max_tokens: 500, timeout: 15000 }
