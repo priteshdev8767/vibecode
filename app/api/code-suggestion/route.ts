@@ -1,7 +1,7 @@
 /**
  * Ultra-Fast AI Inline Code Suggestion API
  *
- * Model: Google Gemini 2.5 Flash (Free Tier)
+ * Model: OpenRouter Auto
  *
  * Capabilities:
  *  • Full-file semantic context (imports, symbols, types, conventions)
@@ -37,14 +37,6 @@ const CFG = {
 type ModelEntry = { id: string; label: string }
 
 const MODEL_STACK: ModelEntry[] = [
-  {
-    id: "gemini-2.5-flash",
-    label: "Gemini 2.5 Flash",
-  },
-  {
-    id: "gemini-2.5",
-    label: "Gemini 2.5",
-  },
   {
     id: "openrouter/auto",
     label: "OpenRouter Auto",
@@ -421,8 +413,8 @@ async function runGeneration(
   type: SuggestionType,
   t0: number,
 ): Promise<SuggestionResponse> {
-  const API_KEY = process.env.GOOGLE_GEMINI_API_KEY
-  if (!API_KEY) throw new Error("GOOGLE_GEMINI_API_KEY not configured")
+  const API_KEY = process.env.OPENROUTER_API_KEY
+  if (!API_KEY) throw new Error("OPENROUTER_API_KEY not configured")
 
   const { system, user } = buildPrompt(context, type)
   const stops = STOP_SEQUENCES[context.language] ?? STOP_SEQUENCES.default
@@ -437,9 +429,7 @@ async function runGeneration(
 
   for (const model of orderedModels) {
     try {
-      const candidates = model.id.startsWith("openrouter/")
-        ? await callOpenRouter(API_KEY, model.id, system, user, stops, temperature, model.id === orderedModels.at(-1)?.id ? CFG.FALLBACK_TIMEOUT_MS : CFG.AI_TIMEOUT_MS)
-        : await callModel(API_KEY, model.id, system, user, stops, temperature, model.id === orderedModels.at(-1)?.id ? CFG.FALLBACK_TIMEOUT_MS : CFG.AI_TIMEOUT_MS)
+      const candidates = await callOpenRouter(API_KEY, model.id, system, user, stops, temperature, model.id === orderedModels.at(-1)?.id ? CFG.FALLBACK_TIMEOUT_MS : CFG.AI_TIMEOUT_MS)
 
       if (!candidates.length) continue
 
@@ -467,14 +457,14 @@ async function runGeneration(
     } catch (err) {
       const errorObj = err instanceof Error ? err : new Error(String(err))
 
-      // Copilot-like fallback: if Gemini model is unavailable or quota is exceeded, try next model
-      if ((model.id.startsWith("gemini") || model.id.startsWith("openrouter")) && /404\s*\:\s*\{\s*"error"\s*\:\s*\{\s*"code"\s*\:\s*404/.test(errorObj.message)) {
+      // Copilot-like fallback: if model is unavailable or quota is exceeded, try next model
+      if (model.id.startsWith("openrouter") && /404\s*\:\s*\{\s*"error"\s*\:\s*\{\s*"code"\s*\:\s*404/.test(errorObj.message)) {
         console.warn(`[CodeSuggestion] ${model.id} not found for API version; trying next model: ${errorObj.message}`)
         lastError = errorObj
         continue
       }
 
-      if (model.id.startsWith("gemini") && /429/.test(errorObj.message)) {
+      if (model.id.startsWith("openrouter") && /429/.test(errorObj.message)) {
         console.warn(`[CodeSuggestion] ${model.id} quota reached, trying next fallback model: ${errorObj.message}`)
         lastError = errorObj
         continue
@@ -493,78 +483,6 @@ async function runGeneration(
   }
 
   throw lastError ?? new Error("All models exhausted without a valid completion")
-}
-
-async function callModel(
-  apiKey: string,
-  modelId: string,
-  system: string,
-  user: string,
-  stops: string[],
-  temperature: number,
-  timeoutMs: number,
-): Promise<Omit<Candidate, "confidence" | "modelUsed">[]> {
-  const ctrl = new AbortController()
-  const timeout = setTimeout(() => ctrl.abort(), timeoutMs)
-
-  try {
-    // Combine system and user prompts for Gemini
-    const combinedPrompt = `${system}\n\n${user}`
-
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`,
-      {
-        method: "POST",
-        signal: ctrl.signal,
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          contents: [
-            {
-              role: "user",
-              parts: [{ text: combinedPrompt }],
-            },
-          ],
-          generationConfig: {
-            temperature,
-            maxOutputTokens: CFG.MAX_TOKENS,
-            topP: 0.95,
-            topK: 64,
-            stopSequences: stops.length > 0 ? stops : undefined,
-          },
-          safetySettings: [
-            { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
-            { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
-            { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
-            { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
-          ],
-        }),
-      }
-    )
-
-    if (!response.ok) {
-      const body = await response.text()
-      throw new Error(`HTTP ${response.status}: ${body}`)
-    }
-
-    const data = await response.json()
-    
-    // Extract text from Gemini response
-    const candidates = data.candidates ?? []
-    
-    return candidates
-      .map((c: { content?: { parts?: Array<{ text?: string }> }; finishReason?: string }) => {
-        const text = c.content?.parts?.[0]?.text ?? ""
-        return {
-          text: cleanSuggestion(text),
-          stopReason: c.finishReason ?? "unknown",
-        }
-      })
-      .filter((c: { text: string }) => c.text.length > 0)
-  } finally {
-    clearTimeout(timeout)
-  }
 }
 
 async function callOpenRouter(
