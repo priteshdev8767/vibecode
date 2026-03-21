@@ -37,6 +37,7 @@
   ],
   "exclude": [
     "node_modules",
-    ".vibecode-starters"
+    ".vibecode-starters",
+    "public/vibecode-starters"
   ]
 }
