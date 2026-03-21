@@ -50,8 +50,8 @@ function modelsForType(type: SuggestionType): ModelEntry[] {
     case "inline":
       // Fast, lightweight model for quick completions
       return [{
-        id: "openrouter/auto",
-        label: "OpenRouter Auto (Optimized for Speed)",
+        id: "nvidia/nemotron-nano-9b-v2:free",
+        label: "Nvidia Nemotron Nano 9B (Free - Optimized for Speed)",
       }]
     case "block":
       // More capable model for complex completions
