@@ -1,7 +1,7 @@
 /**
  * Ultra-Fast AI Inline Code Suggestion API
  *
- * Model: Google Gemini 2.0 Flash (Free Tier)
+ * Model: Google Gemini 2.5 Flash (Free Tier)
  *
  * Capabilities:
  *  • Full-file semantic context (imports, symbols, types, conventions)
@@ -38,12 +38,12 @@ type ModelEntry = { id: string; label: string }
 
 const MODEL_STACK: ModelEntry[] = [
   {
-    id: "gemini-2.0",
-    label: "Gemini 2.0",
+    id: "gemini-2.5-flash",
+    label: "Gemini 2.5 Flash",
   },
   {
-    id: "gemini-1.5",
-    label: "Gemini 1.5",
+    id: "gemini-2.0",
+    label: "Gemini 2.0",
   },
 ]
 
